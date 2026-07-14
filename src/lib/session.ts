@@ -72,6 +72,25 @@ export function transcriptToMarkdown(
   ].join('\n')
 }
 
+// Meet accumulates the ongoing speech inside the same caption DOM node, so a
+// chunk must only keep what was not already committed. Below this overlap
+// length a match is considered accidental (common short words), not a trim.
+const MIN_OVERLAP = 10
+
+export function stripCommittedPrefix(prefix: string, full: string): string {
+  if (!prefix) return full
+  if (full.startsWith(prefix)) return full.slice(prefix.length).trim()
+  // Meet trims old text from the top of a long caption node: the committed
+  // prefix no longer matches from the start, but its tail overlaps the
+  // beginning of the current text
+  const max = Math.min(prefix.length, full.length)
+  for (let len = max; len >= MIN_OVERLAP; len--) {
+    if (full.startsWith(prefix.slice(prefix.length - len))) return full.slice(len).trim()
+  }
+  // no meaningful overlap: the node was reset, everything is new
+  return full
+}
+
 // Normalized mean absolute difference between two grayscale samples (0..1).
 // Mismatched or empty buffers return 1 so the caller treats it as a scene change.
 export function frameDiff(a: ArrayLike<number>, b: ArrayLike<number>): number {

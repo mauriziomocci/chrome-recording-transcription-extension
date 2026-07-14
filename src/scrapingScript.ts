@@ -3,6 +3,7 @@
 import {
   type TranscriptChunk,
   meetIdFromUrl,
+  stripCommittedPrefix,
   transcriptFilename,
   screenshotFilename,
   transcriptToMarkdown,
@@ -11,12 +12,15 @@ import {
 
 let transcript: TranscriptChunk[] = []
 
-type OpenChunk = TranscriptChunk & { timer: number }
+// fullText: complete caption node content at last update — Meet accumulates
+// speech in the same node, so committed text must be subtracted from it
+type OpenChunk = TranscriptChunk & { timer: number; fullText: string }
 
 const CHUNK_GRACE_MS = 2000
 
 const prior = new Map<string, OpenChunk>()
 const lastSeen = new Map<string, string>()
+const committed = new Map<string, string>() // speakerKey -> node text already committed
 
 const normalize = (pre: string) =>
   pre.toLowerCase().replace(/[.,?!'"’]/g, "").replace(/\s+/g, " ").trim()
@@ -31,6 +35,12 @@ function handleCaption(speakerKey: string, speakerName: string, rawText: string)
   const prev = lastSeen.get(speakerKey)
   if (prev === norm) return
   lastSeen.set(speakerKey, norm)
+
+  // keep only what was not already committed for this speaker; the committed
+  // baseline is replaced only at commit time, never here
+  const delta = stripCommittedPrefix(committed.get(speakerKey) ?? '', text)
+  if (!delta) return
+
   transcriptGen++
 
   const now = Date.now()
@@ -42,14 +52,16 @@ function handleCaption(speakerKey: string, speakerName: string, rawText: string)
       startTime: now,
       endTime: now,
       speaker: speakerName,
-      text,
+      text: delta,
+      fullText: text,
       timer
     })
     return
   }
 
   existing.endTime = now
-  existing.text = text
+  existing.text = delta
+  existing.fullText = text
   existing.speaker = speakerName
 
   clearTimeout(existing.timer)
@@ -60,8 +72,9 @@ function commit(key: string){
   const entry = prior.get(key)
   if(!entry) return
 
-  const { timer, ...chunk } = entry
+  const { timer, fullText, ...chunk } = entry
   transcript.push(chunk)
+  committed.set(key, fullText)
   clearTimeout(timer)
   prior.delete(key)
 }
@@ -73,7 +86,7 @@ function commitAll(){
 // committed chunks plus a snapshot of the still-open ones, in caption order,
 // so periodic autosaves do not force-close chunks mid-sentence
 function allChunks(): TranscriptChunk[] {
-  const open = [...prior.values()].map(({ timer: _timer, ...chunk }) => chunk)
+  const open = [...prior.values()].map(({ timer: _timer, fullText: _full, ...chunk }) => chunk)
   return [...transcript, ...open].sort((a, b) => a.startTime - b.startTime)
 }
 
@@ -88,6 +101,7 @@ function resetTranscript(){
   ;[...prior.values()].forEach(e => clearTimeout(e.timer))
   prior.clear()
   lastSeen.clear()
+  committed.clear()
   transcript = []
 }
 

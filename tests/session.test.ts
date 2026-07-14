@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   meetIdFromUrl,
+  stripCommittedPrefix,
   formatDateStamp,
   formatTimeStamp,
   formatClock,
@@ -84,6 +85,36 @@ describe('transcriptToMarkdown', () => {
     const md = transcriptToMarkdown('abc-defg-hij', T0, [], T0)
     expect(md).toContain('# Google Meet abc-defg-hij')
     expect(md).not.toContain('] ')
+  })
+})
+
+describe('stripCommittedPrefix', () => {
+  it('returns only the new suffix when the node text grows', () => {
+    expect(stripCommittedPrefix('Se mi senti parlare', 'Se mi senti parlare da solo')).toBe('da solo')
+  })
+
+  it('returns the full text when there is no committed prefix', () => {
+    expect(stripCommittedPrefix('', 'Ciao a tutti')).toBe('Ciao a tutti')
+  })
+
+  it('returns the full text when the node was reset (new sentence)', () => {
+    expect(stripCommittedPrefix('Se mi senti parlare da solo', 'Nuova frase da capo')).toBe('Nuova frase da capo')
+  })
+
+  it('handles Meet trimming the top of the caption node (suffix overlap)', () => {
+    // committed: "...che sto provando quella cosa." — node now starts mid-sentence
+    const prefix = 'Se mi senti parlare da solo che sto provando quella cosa.'
+    const full = 'che sto provando quella cosa. mamma'
+    expect(stripCommittedPrefix(prefix, full)).toBe('mamma')
+  })
+
+  it('ignores short accidental overlaps that would eat real words', () => {
+    // "e" at the end of prefix also starts the new sentence: too short to be a real overlap
+    expect(stripCommittedPrefix('parliamo del punto e', 'e adesso passiamo oltre')).toBe('e adesso passiamo oltre')
+  })
+
+  it('returns empty string when nothing new was added', () => {
+    expect(stripCommittedPrefix('Testo identico', 'Testo identico')).toBe('')
   })
 })
 
