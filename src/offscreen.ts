@@ -167,6 +167,26 @@ async function captureWithStreamId(streamId: string): Promise<MediaStream> {
 let mediaRecorder: MediaRecorder | null = null
 let chunks: BlobPart[] = []
 let capturing = false
+let playbackCtx: AudioContext | null = null
+
+// tabCapture mutes the captured tab for the user: whoever captures must route
+// the audio back to the speakers. Only tab audio — routing the mic would echo.
+function startLocalPlayback(tabAudio: MediaStreamTrack) {
+  try {
+    const AC = (window.AudioContext || (window as any).webkitAudioContext) as typeof AudioContext
+    playbackCtx = new AC()
+    void playbackCtx.resume().catch(() => {})
+    playbackCtx.createMediaStreamSource(new MediaStream([tabAudio])).connect(playbackCtx.destination)
+    log('local playback of tab audio started')
+  } catch (e) {
+    log('local playback setup failed (call audio will stay muted while recording)', e)
+  }
+}
+
+function stopLocalPlayback() {
+  try { void playbackCtx?.close() } catch {}
+  playbackCtx = null
+}
 
 async function prepareAndRecord(baseStream: MediaStream): Promise<void> {
   const a = baseStream.getAudioTracks()
@@ -193,6 +213,9 @@ async function prepareAndRecord(baseStream: MediaStream): Promise<void> {
   // debug meters
   const rawAudio = baseStream.getAudioTracks()[0]
   if (rawAudio) attachRmsMeter(rawAudio, 'RAW')
+
+  // keep the call audible for the user while recording
+  if (rawAudio) startLocalPlayback(rawAudio)
 
   const micStream = await maybeGetMicStream()
   const mixedStream = mixAudio(baseStream, micStream)
@@ -252,6 +275,7 @@ async function prepareAndRecord(baseStream: MediaStream): Promise<void> {
       clearTimeout(startTimeout)
       log('MediaRecorder error', e)
       try { mixedStream.getTracks().forEach(t => t.stop()) } catch {}
+      stopLocalPlayback()
       mediaRecorder = null
       capturing = false
       pushState(false)
@@ -281,6 +305,7 @@ async function prepareAndRecord(baseStream: MediaStream): Promise<void> {
         log('Finalize/Save failed', e)
       } finally {
         try { mixedStream.getTracks().forEach(t => t.stop()) } catch {}
+        stopLocalPlayback()
         mediaRecorder = null
         chunks = []
         capturing = false
