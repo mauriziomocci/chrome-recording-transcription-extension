@@ -6,6 +6,24 @@ const startBtn = document.getElementById('start-rec') as HTMLButtonElement | nul
 const stopBtn = document.getElementById('stop-rec') as HTMLButtonElement | null;
 const autoTranscriptCb = document.getElementById('auto-transcript') as HTMLInputElement | null;
 const autoShotsCb = document.getElementById('auto-shots') as HTMLInputElement | null;
+const shotNowBtn = document.getElementById('shot-now') as HTMLButtonElement | null;
+
+// manual screenshot: captures the presentation tile (or the largest video)
+shotNowBtn?.addEventListener('click', async () => {
+  shotNowBtn.disabled = true;
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) throw new Error('No active tab');
+    const res = await chrome.tabs.sendMessage(tab.id, { type: 'MANUAL_SCREENSHOT' })
+      .catch(() => ({ ok: false, error: 'Not a Google Meet page' }));
+    if (!res?.ok) throw new Error(res?.error || 'Capture failed');
+    toast(`Screenshot saved: ${res.filename}`);
+  } catch (e: any) {
+    alert(`Screenshot failed:\n${e?.message || e}`);
+  } finally {
+    shotNowBtn.disabled = false;
+  }
+});
 
 // auto-save settings, read by the content script via chrome.storage.local
 void (async () => {

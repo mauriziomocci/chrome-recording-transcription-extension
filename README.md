@@ -15,7 +15,9 @@ If you'd rather use a bot or desktop recording form factor, check out [Recall.ai
 
 **Auto-save transcript** – while a meeting is running, the transcript is saved automatically every 60 seconds to `Downloads/meet-transcripts/meet-<meeting-id>-<date>-<start-time>.md` (same file overwritten, no duplicates). A final save happens when the call ends. Toggle in the popup.
 
-**Screen-share screenshots** – when a participant shares their screen, the extension detects scene changes on the presentation tile and saves PNG snapshots next to the transcript (`...-shot-<time>.png`). Min 5s between shots, max 200 per session. Toggle in the popup.
+**Screen-share screenshots** – when a participant shares their screen, the extension detects scene changes on the presentation tile and saves WebP snapshots next to the transcript (`...-shot-<time>.webp`). Min 5s between shots, max 200 per session. Toggle in the popup.
+
+**Manual screenshot** – a "Screenshot Now" button in the popup captures the presentation tile (or the largest video) on demand, bypassing the scene-change detection and rate limits.
 
 **Tab recorder** – captures Google Meet tab video + audio into a .webm via MediaRecorder.
 
@@ -163,7 +165,7 @@ const WANT_MIC_MIX = true
   - Recordings: `google-meet-recording-<meet-suffix>-<timestamp>.webm`
   - Manual transcripts: `google-meet-transcript-<meet-suffix>-<timestamp>.md`
   - Auto-saved transcripts: `meet-transcripts/meet-<meet-suffix>-<date>-<start-time>.md`
-  - Screenshots: `meet-transcripts/meet-<meet-suffix>-<date>-<start-time>-shot-<time>.png`
+  - Screenshots: `meet-transcripts/meet-<meet-suffix>-<date>-<start-time>-shot-<time>.webp`
 
 ## Scripts
 

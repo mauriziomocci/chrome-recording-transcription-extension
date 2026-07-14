@@ -55,7 +55,7 @@ describe('filenames', () => {
   it('builds the screenshot filename with the shot clock time', () => {
     const shotAt = new Date(2026, 6, 13, 14, 41, 9).getTime()
     expect(screenshotFilename('abc-defg-hij', T0, shotAt)).toBe(
-      'meet-transcripts/meet-abc-defg-hij-2026-07-13-1430-shot-144109.png'
+      'meet-transcripts/meet-abc-defg-hij-2026-07-13-1430-shot-144109.webp'
     )
   })
 })

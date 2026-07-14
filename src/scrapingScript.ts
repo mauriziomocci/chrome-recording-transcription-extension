@@ -31,6 +31,7 @@ function handleCaption(speakerKey: string, speakerName: string, rawText: string)
   const prev = lastSeen.get(speakerKey)
   if (prev === norm) return
   lastSeen.set(speakerKey, norm)
+  transcriptGen++
 
   const now = Date.now()
   const existing = prior.get(speakerKey)
@@ -148,18 +149,20 @@ function launchAttachObserver(region: HTMLElement) {
   region.querySelectorAll<HTMLElement>(captionParent).forEach(scanClasses)
 }
 
+// The captions region is discovered from the 2s watch loop below instead of a
+// body-wide MutationObserver: Meet mutates the DOM constantly and a subtree
+// observer on document.body would fire dozens of times per second for nothing.
 let captionRegion: HTMLElement | null = null
 
-new MutationObserver(() => {
+function watchCaptionRegion(){
   const region = document.querySelector<HTMLElement>('div[role="region"][aria-label="Captions"]')
     ?? document.querySelector(captionParent)?.closest<HTMLElement>('div[role="region"]')
     ?? null
-  captionRegion = region
-  if(region && !region.dataset.mtrObserved){
-    region.dataset.mtrObserved = '1'
-    launchAttachObserver(region)
+  if (region !== captionRegion) {
+    captionRegion = region
+    if (region) launchAttachObserver(region)
   }
-}).observe(document.body, { childList: true, subtree: true })
+}
 
 // ---------------------------------------------------------------------------
 // Auto-save session: filename fixed at session start, periodic overwrite in
@@ -189,6 +192,10 @@ let noCallChecks = 0
 let prevSample: Uint8ClampedArray | null = null
 let lastShotAt = 0
 let shotCapReported = false
+// generation counter instead of a boolean dirty flag: captions arriving while
+// a save is in flight must not be marked clean by that save's callback
+let transcriptGen = 0
+let savedGen = 0
 
 const settings = { autoSaveTranscript: true, autoScreenshots: true }
 try {
@@ -219,6 +226,8 @@ function ensureSession(){
 function saveTranscript(reason: string){
   if (!session || !settings.autoSaveTranscript) return
   if (transcript.length === 0 && prior.size === 0) return
+  if (transcriptGen === savedGen) return // nothing new since the last save, skip the download
+  const gen = transcriptGen
   const markdown = buildMarkdown()
   chrome.runtime.sendMessage(
     { type: 'AUTO_SAVE_TRANSCRIPT', filename: session.filename, markdown },
@@ -226,7 +235,10 @@ function saveTranscript(reason: string){
       const err = chrome.runtime.lastError
       if (err) console.warn('[mtr] autosave failed:', err.message)
       else if (res?.ok === false) console.warn('[mtr] autosave rejected:', res.error)
-      else console.log(`[mtr] transcript saved (${reason})`)
+      else {
+        savedGen = gen
+        console.log(`[mtr] transcript saved (${reason})`)
+      }
     }
   )
 }
@@ -247,6 +259,8 @@ function inCallNow(): boolean {
 }
 
 setInterval(() => {
+  watchCaptionRegion()
+
   const inCall = inCallNow()
   const videoCount = document.querySelectorAll('video').length
 
@@ -337,27 +351,56 @@ function sampleAndMaybeShoot(){
     return
   }
 
+  if (captureShot(video, now)) {
+    lastShotAt = now
+    session.shotCount++
+  }
+}
+
+// draws the video frame to canvas and ships it to the background as WebP
+// (5-10x smaller than PNG for document content, faster to encode)
+function captureShot(video: HTMLVideoElement, now: number): string | null {
+  const meetId = session?.meetId ?? meetIdFromUrl(location.href)
+  const start = session?.start ?? now
+
   const scale = Math.min(1, MAX_SHOT_WIDTH / video.videoWidth)
   shotCanvas.width = Math.round(video.videoWidth * scale)
   shotCanvas.height = Math.round(video.videoHeight * scale)
   const ctx = shotCanvas.getContext('2d')
-  if (!ctx) return
+  if (!ctx) return null
 
   try {
     ctx.drawImage(video, 0, 0, shotCanvas.width, shotCanvas.height)
-    const dataUrl = shotCanvas.toDataURL('image/png')
-    const filename = screenshotFilename(session.meetId, session.start, now)
+    const dataUrl = shotCanvas.toDataURL('image/webp', 0.85)
+    const filename = screenshotFilename(meetId, start, now)
     chrome.runtime.sendMessage({ type: 'SAVE_SCREENSHOT', filename, dataUrl }, (res) => {
       const err = chrome.runtime.lastError
       if (err) console.warn('[mtr] screenshot save failed:', err.message)
       else if (res?.ok === false) console.warn('[mtr] screenshot rejected:', res.error)
     })
-    lastShotAt = now
-    session.shotCount++
     console.log('[mtr] screenshot captured:', filename)
+    return filename
   } catch (e) {
     console.warn('[mtr] screenshot capture failed', e)
+    return null
   }
+}
+
+// manual capture from the popup button: prefers the presentation tile, falls
+// back to the largest rendered video; bypasses scene diff, interval and cap
+function manualScreenshot(): { ok: boolean; filename?: string; error?: string } {
+  let video = findPresentationVideo()
+  if (!video) {
+    const vids = Array.from(document.querySelectorAll('video')).filter(v => v.videoWidth > 0)
+    video = vids
+      .map(v => { const r = v.getBoundingClientRect(); return { v, area: r.width * r.height } })
+      .sort((a, b) => b.area - a.area)[0]?.v ?? null
+  }
+  if (!video) return { ok: false, error: 'No video to capture on this page' }
+
+  const filename = captureShot(video, Date.now())
+  if (!filename) return { ok: false, error: 'Capture failed' }
+  return { ok: true, filename }
 }
 
 // ---------------------------------------------------------------------------
@@ -382,6 +425,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === 'RESET_TRANSCRIPT') {
     resetTranscript()
     sendResponse({ ok: true })
+    return true
+  }
+  if (msg?.type === 'MANUAL_SCREENSHOT') {
+    sendResponse(manualScreenshot())
     return true
   }
 })

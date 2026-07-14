@@ -227,8 +227,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
     if (msg?.type === 'SAVE_SCREENSHOT') {
       const { filename, dataUrl } = msg
-      if (typeof filename !== 'string' || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/png')) {
-        sendResponse({ ok: false, error: 'Missing filename or PNG dataUrl' })
+      if (typeof filename !== 'string' || typeof dataUrl !== 'string' || !/^data:image\/(webp|png)/.test(dataUrl)) {
+        sendResponse({ ok: false, error: 'Missing filename or image dataUrl' })
         return
       }
       chrome.downloads.download(

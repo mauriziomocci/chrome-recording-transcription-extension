@@ -48,7 +48,7 @@ export function transcriptFilename(meetId: string, sessionStart: number): string
 }
 
 export function screenshotFilename(meetId: string, sessionStart: number, shotTime: number): string {
-  return `${sessionBase(meetId, sessionStart)}-shot-${formatClock(shotTime).replace(/:/g, '')}.png`
+  return `${sessionBase(meetId, sessionStart)}-shot-${formatClock(shotTime).replace(/:/g, '')}.webp`
 }
 
 export function transcriptToMarkdown(
