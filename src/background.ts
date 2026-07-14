@@ -102,7 +102,7 @@ chrome.runtime.onConnect.addListener((port) => {
   })
 })
 
-function postToOffscreen(msg: any): Promise<any> {
+function postToOffscreen(msg: any, timeoutMs = 15000): Promise<any> {
   return new Promise((resolve, reject) => {
     if (!offscreenPort) return reject(new Error('Offscreen port not connected'))
     const id = Math.random().toString(36).slice(2)
@@ -121,7 +121,7 @@ function postToOffscreen(msg: any): Promise<any> {
     setTimeout(() => {
       try { offscreenPort!.onMessage.removeListener(listener) } catch {}
       reject(new Error('Offscreen response timeout'))
-    }, 15000)
+    }, timeoutMs)
   })
 }
 
@@ -170,7 +170,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
       try {
         const streamId = await getStreamIdForTab(tabId)
-        const r = await postToOffscreen({ type: 'OFFSCREEN_START', streamId })
+        // start can legitimately take longer than the default RPC timeout:
+        // two getUserMedia attempts plus MediaRecorder spin-up
+        const r = await postToOffscreen({ type: 'OFFSCREEN_START', streamId }, 30000)
         bglog('postToOffscreen(OFFSCREEN_START) response', r)
 
         if (r?.ok) {
@@ -249,7 +251,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   return true
 })
 
-chrome.runtime.onSuspend?.addListener(async () => {
-  try { if (offscreenPort) await postToOffscreen({ type: 'OFFSCREEN_STOP' }) } catch {}
-  setBadge(false)
-})
+// NOTE: no onSuspend auto-stop. The MV3 service worker recycles after ~30s of
+// inactivity even mid-recording; the recording lives in the offscreen document
+// and survives that just fine. Upstream stopped (and downloaded) the recording
+// here, which killed every recording longer than the worker's idle window.
+// State is resynced on reconnect: the offscreen pushes RECORDING_STATE each
+// time it opens a new port.

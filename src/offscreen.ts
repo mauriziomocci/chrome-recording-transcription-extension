@@ -28,6 +28,9 @@ function connectPort(): chrome.runtime.Port {
   p.onMessage.addListener(handleRpcMessage)
   // tell background alive
   p.postMessage({ type: 'OFFSCREEN_READY' })
+  // resync real recording state after a service worker restart: the fresh
+  // worker starts with recording=false while a capture may well be running
+  p.postMessage({ type: 'RECORDING_STATE', recording: capturing })
   log('READY signaled via Port')
   portRef = p
   return p
@@ -230,28 +233,9 @@ async function prepareAndRecord(baseStream: MediaStream): Promise<void> {
 
   log('final stream tracks -> video:', mixedStream.getVideoTracks().length, 'audio:', mixedStream.getAudioTracks().length)
 
-  // safety check, not fatal
-  if (rawAudio) {
-    try {
-      const AC = (window.AudioContext || (window as any).webkitAudioContext) as typeof AudioContext
-      const ctx = new AC()
-      await ctx.resume().catch(() => {})
-      const src = ctx.createMediaStreamSource(new MediaStream([rawAudio]))
-      const analyser = ctx.createAnalyser()
-      analyser.fftSize = 256
-      const buf = new Uint8Array(analyser.frequencyBinCount)
-      src.connect(analyser)
-      await sleep(1000)
-      analyser.getByteTimeDomainData(buf)
-      let sum = 0
-      for (let i = 0; i < buf.length; i++) {
-        const x = (buf[i] - 128) / 128
-        sum += x * x
-      }
-      const rms = Math.sqrt(sum / buf.length)
-      if (rms < 0.005) log('no audio energy detected before start')
-    } catch {}
-  }
+  // (upstream had a 1s blocking RMS "safety check" here; removed — it only
+  // logged a warning and added a full second to every recording start, while
+  // the periodic RMS meters above already surface silent-input cases)
 
   chunks = []
   const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')
