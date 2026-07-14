@@ -11,7 +11,11 @@ If you'd rather use a bot or desktop recording form factor, check out [Recall.ai
 
 ## Features
 
-**Transcript saver** – parses Google Meet’s live captions and downloads a timestamped .txt file.
+**Transcript saver** – parses Google Meet’s live captions and downloads a timestamped Markdown transcript.
+
+**Auto-save transcript** – while a meeting is running, the transcript is saved automatically every 60 seconds to `Downloads/meet-transcripts/meet-<meeting-id>-<date>-<start-time>.md` (same file overwritten, no duplicates). A final save happens when the call ends. Toggle in the popup.
+
+**Screen-share screenshots** – when a participant shares their screen, the extension detects scene changes on the presentation tile and saves PNG snapshots next to the transcript (`...-shot-<time>.png`). Min 5s between shots, max 200 per session. Toggle in the popup.
 
 **Tab recorder** – captures Google Meet tab video + audio into a .webm via MediaRecorder.
 
@@ -137,6 +141,16 @@ This compiles TypeScript via `ts-loader` and copies the HTML/manifest to `dist/`
 └─ dist/                # build output (generated)
 ```
 
+## Auto-save details
+
+- Files land in `Downloads/meet-transcripts/`. Chrome extensions cannot write outside the Downloads folder; move files elsewhere manually or with your own tooling.
+- The transcript filename is fixed at session start (`meet-<meeting-id>-YYYY-MM-DD-HHMM.md`) and the same file is overwritten on every autosave (`conflictAction: overwrite`).
+- The session starts when at least two video tiles are visible (past the lobby) or at the first caption; it ends when no video/caption region is present for ~6 seconds.
+- Captions must be ON in Google Meet for the transcript to have content.
+- If Chrome has “Ask where to save each file before downloading” enabled, silent autosave will prompt every time — disable it for a smooth experience.
+- Screenshot detection is a heuristic (dominant video tile at least 2x larger than the next one): expect occasional false positives/negatives.
+- Tunable constants live at the top of the auto-save section in `src/scrapingScript.ts` (`AUTOSAVE_MS`, `SCENE_DIFF_THRESHOLD`, `SHOT_MIN_INTERVAL_MS`, `SHOT_MAX_PER_SESSION`, …).
+
 ## Configuration knobs
 - Mix microphone into recording: 
   - In src/offscreen.ts:
@@ -147,7 +161,9 @@ const WANT_MIC_MIX = true
 
 - Output filenames
   - Recordings: `google-meet-recording-<meet-suffix>-<timestamp>.webm`
-  - Transcripts: `google-meet-transcript-<meet-suffix>-<timestamp>.txt`
+  - Manual transcripts: `google-meet-transcript-<meet-suffix>-<timestamp>.md`
+  - Auto-saved transcripts: `meet-transcripts/meet-<meet-suffix>-<date>-<start-time>.md`
+  - Screenshots: `meet-transcripts/meet-<meet-suffix>-<date>-<start-time>-shot-<time>.png`
 
 ## Scripts
 

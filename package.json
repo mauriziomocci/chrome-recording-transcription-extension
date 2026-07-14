@@ -3,7 +3,8 @@
     "version": "1.0.0",
     "scripts": {
         "build": "webpack --mode=production",
-        "watch": "webpack --watch"
+        "watch": "webpack --watch",
+        "test": "vitest run"
     },
     "devDependencies": {
         "@types/chrome": "^0.0.326",
@@ -12,6 +13,7 @@
         "copy-webpack-plugin": "^13.0.1",
         "ts-loader": "^9.5.0",
         "typescript": "^5.8.3",
+        "vitest": "^4.1.10",
         "webpack": "^5.99.9",
         "webpack-cli": "^6.0.1"
     },

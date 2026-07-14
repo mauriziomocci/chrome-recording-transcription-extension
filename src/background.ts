@@ -125,6 +125,18 @@ function postToOffscreen(msg: any): Promise<any> {
   })
 }
 
+// chunked conversion: a single String.fromCharCode(...bytes) overflows the
+// call stack on long transcripts, so encode 32 KB at a time
+function utf8ToBase64(text: string): string {
+  const bytes = new TextEncoder().encode(text)
+  let bin = ''
+  const CHUNK = 0x8000
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK))
+  }
+  return btoa(bin)
+}
+
 // background side streamId helper
 function getStreamIdForTab(tabId: number): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -192,6 +204,41 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
     if (msg?.type === 'GET_RECORDING_STATUS') {
       sendResponse({ recording: lastKnownRecording })
+      return
+    }
+
+    if (msg?.type === 'AUTO_SAVE_TRANSCRIPT') {
+      const { filename, markdown } = msg
+      if (typeof filename !== 'string' || typeof markdown !== 'string') {
+        sendResponse({ ok: false, error: 'Missing filename or markdown' })
+        return
+      }
+      const url = 'data:text/markdown;charset=utf-8;base64,' + utf8ToBase64(markdown)
+      chrome.downloads.download(
+        { url, filename, saveAs: false, conflictAction: 'overwrite' },
+        (downloadId) => {
+          const err = chrome.runtime.lastError
+          if (err) { bglog('AUTO_SAVE_TRANSCRIPT download error:', err.message); sendResponse({ ok: false, error: err.message }) }
+          else sendResponse({ ok: true, downloadId })
+        }
+      )
+      return
+    }
+
+    if (msg?.type === 'SAVE_SCREENSHOT') {
+      const { filename, dataUrl } = msg
+      if (typeof filename !== 'string' || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/png')) {
+        sendResponse({ ok: false, error: 'Missing filename or PNG dataUrl' })
+        return
+      }
+      chrome.downloads.download(
+        { url: dataUrl, filename, saveAs: false, conflictAction: 'uniquify' },
+        (downloadId) => {
+          const err = chrome.runtime.lastError
+          if (err) { bglog('SAVE_SCREENSHOT download error:', err.message); sendResponse({ ok: false, error: err.message }) }
+          else sendResponse({ ok: true, downloadId })
+        }
+      )
       return
     }
   })().catch((err) => {
