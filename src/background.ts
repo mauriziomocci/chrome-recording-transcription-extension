@@ -102,7 +102,7 @@ chrome.runtime.onConnect.addListener((port) => {
   })
 })
 
-function postToOffscreen(msg: any): Promise<any> {
+function postToOffscreen(msg: any, timeoutMs = 15000): Promise<any> {
   return new Promise((resolve, reject) => {
     if (!offscreenPort) return reject(new Error('Offscreen port not connected'))
     const id = Math.random().toString(36).slice(2)
@@ -121,8 +121,20 @@ function postToOffscreen(msg: any): Promise<any> {
     setTimeout(() => {
       try { offscreenPort!.onMessage.removeListener(listener) } catch {}
       reject(new Error('Offscreen response timeout'))
-    }, 15000)
+    }, timeoutMs)
   })
+}
+
+// chunked conversion: a single String.fromCharCode(...bytes) overflows the
+// call stack on long transcripts, so encode 32 KB at a time
+function utf8ToBase64(text: string): string {
+  const bytes = new TextEncoder().encode(text)
+  let bin = ''
+  const CHUNK = 0x8000
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK))
+  }
+  return btoa(bin)
 }
 
 // background side streamId helper
@@ -158,7 +170,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
       try {
         const streamId = await getStreamIdForTab(tabId)
-        const r = await postToOffscreen({ type: 'OFFSCREEN_START', streamId })
+        // start can legitimately take longer than the default RPC timeout:
+        // two getUserMedia attempts plus MediaRecorder spin-up
+        const r = await postToOffscreen({ type: 'OFFSCREEN_START', streamId }, 30000)
         bglog('postToOffscreen(OFFSCREEN_START) response', r)
 
         if (r?.ok) {
@@ -194,6 +208,41 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       sendResponse({ recording: lastKnownRecording })
       return
     }
+
+    if (msg?.type === 'AUTO_SAVE_TRANSCRIPT') {
+      const { filename, markdown } = msg
+      if (typeof filename !== 'string' || typeof markdown !== 'string') {
+        sendResponse({ ok: false, error: 'Missing filename or markdown' })
+        return
+      }
+      const url = 'data:text/markdown;charset=utf-8;base64,' + utf8ToBase64(markdown)
+      chrome.downloads.download(
+        { url, filename, saveAs: false, conflictAction: 'overwrite' },
+        (downloadId) => {
+          const err = chrome.runtime.lastError
+          if (err) { bglog('AUTO_SAVE_TRANSCRIPT download error:', err.message); sendResponse({ ok: false, error: err.message }) }
+          else sendResponse({ ok: true, downloadId })
+        }
+      )
+      return
+    }
+
+    if (msg?.type === 'SAVE_SCREENSHOT') {
+      const { filename, dataUrl } = msg
+      if (typeof filename !== 'string' || typeof dataUrl !== 'string' || !/^data:image\/(webp|png)/.test(dataUrl)) {
+        sendResponse({ ok: false, error: 'Missing filename or image dataUrl' })
+        return
+      }
+      chrome.downloads.download(
+        { url: dataUrl, filename, saveAs: false, conflictAction: 'uniquify' },
+        (downloadId) => {
+          const err = chrome.runtime.lastError
+          if (err) { bglog('SAVE_SCREENSHOT download error:', err.message); sendResponse({ ok: false, error: err.message }) }
+          else sendResponse({ ok: true, downloadId })
+        }
+      )
+      return
+    }
   })().catch((err) => {
     console.error('[background] top-level error', err)
     sendResponse({ ok: false, error: String(err) })
@@ -202,7 +251,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   return true
 })
 
-chrome.runtime.onSuspend?.addListener(async () => {
-  try { if (offscreenPort) await postToOffscreen({ type: 'OFFSCREEN_STOP' }) } catch {}
-  setBadge(false)
-})
+// NOTE: no onSuspend auto-stop. The MV3 service worker recycles after ~30s of
+// inactivity even mid-recording; the recording lives in the offscreen document
+// and survives that just fine. Upstream stopped (and downloaded) the recording
+// here, which killed every recording longer than the worker's idle window.
+// State is resynced on reconnect: the offscreen pushes RECORDING_STATE each
+// time it opens a new port.

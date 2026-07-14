@@ -4,6 +4,42 @@ const saveBtn = document.getElementById('save') as HTMLButtonElement | null;
 const micBtn = document.getElementById('enable-mic') as HTMLButtonElement | null;
 const startBtn = document.getElementById('start-rec') as HTMLButtonElement | null;
 const stopBtn = document.getElementById('stop-rec') as HTMLButtonElement | null;
+const autoTranscriptCb = document.getElementById('auto-transcript') as HTMLInputElement | null;
+const autoShotsCb = document.getElementById('auto-shots') as HTMLInputElement | null;
+const shotNowBtn = document.getElementById('shot-now') as HTMLButtonElement | null;
+
+// manual screenshot: captures the presentation tile (or the largest video)
+shotNowBtn?.addEventListener('click', async () => {
+  shotNowBtn.disabled = true;
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) throw new Error('No active tab');
+    const res = await chrome.tabs.sendMessage(tab.id, { type: 'MANUAL_SCREENSHOT' })
+      .catch(() => ({ ok: false, error: 'Not a Google Meet page' }));
+    if (!res?.ok) throw new Error(res?.error || 'Capture failed');
+    toast(`Screenshot saved: ${res.filename}`);
+  } catch (e: any) {
+    alert(`Screenshot failed:\n${e?.message || e}`);
+  } finally {
+    shotNowBtn.disabled = false;
+  }
+});
+
+// auto-save settings, read by the content script via chrome.storage.local
+void (async () => {
+  if (!autoTranscriptCb || !autoShotsCb) return;
+  try {
+    const res = await chrome.storage.local.get({ autoSaveTranscript: true, autoScreenshots: true });
+    autoTranscriptCb.checked = !!res.autoSaveTranscript;
+    autoShotsCb.checked = !!res.autoScreenshots;
+  } catch { /* defaults stay checked */ }
+  autoTranscriptCb.addEventListener('change', () => {
+    void chrome.storage.local.set({ autoSaveTranscript: autoTranscriptCb.checked });
+  });
+  autoShotsCb.addEventListener('change', () => {
+    void chrome.storage.local.set({ autoScreenshots: autoShotsCb.checked });
+  });
+})();
 
 function setUI(recording: boolean) {
   if (!startBtn || !stopBtn) return;
@@ -115,13 +151,13 @@ saveBtn?.addEventListener('click', async () => {
     return;
   }
 
-  const blob = new Blob([transcript], { type: 'text/plain' });
+  const blob = new Blob([transcript], { type: 'text/markdown' });
   const url = URL.createObjectURL(blob);
   const suffix =
     new URL(tab.url ?? 'https://meet.google.com').pathname.split('/').pop() || 'google-meet';
 
   chrome.downloads.download(
-    { url, filename: `google-meet-transcript-${suffix}-${Date.now()}.txt`, saveAs: true },
+    { url, filename: `google-meet-transcript-${suffix}-${Date.now()}.md`, saveAs: true },
     () => URL.revokeObjectURL(url)
   );
 });

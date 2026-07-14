@@ -22,8 +22,15 @@ function connectPort(): chrome.runtime.Port {
   try { portRef?.disconnect() } catch {}
   const p: chrome.runtime.Port = chrome.runtime.connect({ name: 'offscreen' })
   p.onDisconnect.addListener(() => { log('Port disconnected'); portRef = null })
+  // the RPC handler must be attached to EVERY port: when the MV3 service
+  // worker idles out and reconnects, a fresh port is created and a listener
+  // registered only once at module load would leave it deaf (START timeouts)
+  p.onMessage.addListener(handleRpcMessage)
   // tell background alive
   p.postMessage({ type: 'OFFSCREEN_READY' })
+  // resync real recording state after a service worker restart: the fresh
+  // worker starts with recording=false while a capture may well be running
+  p.postMessage({ type: 'RECORDING_STATE', recording: capturing })
   log('READY signaled via Port')
   portRef = p
   return p
@@ -167,6 +174,26 @@ async function captureWithStreamId(streamId: string): Promise<MediaStream> {
 let mediaRecorder: MediaRecorder | null = null
 let chunks: BlobPart[] = []
 let capturing = false
+let playbackCtx: AudioContext | null = null
+
+// tabCapture mutes the captured tab for the user: whoever captures must route
+// the audio back to the speakers. Only tab audio — routing the mic would echo.
+function startLocalPlayback(tabAudio: MediaStreamTrack) {
+  try {
+    const AC = (window.AudioContext || (window as any).webkitAudioContext) as typeof AudioContext
+    playbackCtx = new AC()
+    void playbackCtx.resume().catch(() => {})
+    playbackCtx.createMediaStreamSource(new MediaStream([tabAudio])).connect(playbackCtx.destination)
+    log('local playback of tab audio started')
+  } catch (e) {
+    log('local playback setup failed (call audio will stay muted while recording)', e)
+  }
+}
+
+function stopLocalPlayback() {
+  try { void playbackCtx?.close() } catch {}
+  playbackCtx = null
+}
 
 async function prepareAndRecord(baseStream: MediaStream): Promise<void> {
   const a = baseStream.getAudioTracks()
@@ -194,6 +221,9 @@ async function prepareAndRecord(baseStream: MediaStream): Promise<void> {
   const rawAudio = baseStream.getAudioTracks()[0]
   if (rawAudio) attachRmsMeter(rawAudio, 'RAW')
 
+  // keep the call audible for the user while recording
+  if (rawAudio) startLocalPlayback(rawAudio)
+
   const micStream = await maybeGetMicStream()
   const mixedStream = mixAudio(baseStream, micStream)
 
@@ -203,28 +233,9 @@ async function prepareAndRecord(baseStream: MediaStream): Promise<void> {
 
   log('final stream tracks -> video:', mixedStream.getVideoTracks().length, 'audio:', mixedStream.getAudioTracks().length)
 
-  // safety check, not fatal
-  if (rawAudio) {
-    try {
-      const AC = (window.AudioContext || (window as any).webkitAudioContext) as typeof AudioContext
-      const ctx = new AC()
-      await ctx.resume().catch(() => {})
-      const src = ctx.createMediaStreamSource(new MediaStream([rawAudio]))
-      const analyser = ctx.createAnalyser()
-      analyser.fftSize = 256
-      const buf = new Uint8Array(analyser.frequencyBinCount)
-      src.connect(analyser)
-      await sleep(1000)
-      analyser.getByteTimeDomainData(buf)
-      let sum = 0
-      for (let i = 0; i < buf.length; i++) {
-        const x = (buf[i] - 128) / 128
-        sum += x * x
-      }
-      const rms = Math.sqrt(sum / buf.length)
-      if (rms < 0.005) log('no audio energy detected before start')
-    } catch {}
-  }
+  // (upstream had a 1s blocking RMS "safety check" here; removed — it only
+  // logged a warning and added a full second to every recording start, while
+  // the periodic RMS meters above already surface silent-input cases)
 
   chunks = []
   const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')
@@ -252,6 +263,7 @@ async function prepareAndRecord(baseStream: MediaStream): Promise<void> {
       clearTimeout(startTimeout)
       log('MediaRecorder error', e)
       try { mixedStream.getTracks().forEach(t => t.stop()) } catch {}
+      stopLocalPlayback()
       mediaRecorder = null
       capturing = false
       pushState(false)
@@ -281,6 +293,7 @@ async function prepareAndRecord(baseStream: MediaStream): Promise<void> {
         log('Finalize/Save failed', e)
       } finally {
         try { mixedStream.getTracks().forEach(t => t.stop()) } catch {}
+        stopLocalPlayback()
         mediaRecorder = null
         chunks = []
         capturing = false
@@ -315,8 +328,7 @@ function stopRecording() {
 }
 
 // port rpc
-const rpcPort = getPort()
-rpcPort.onMessage.addListener(async (msg: any) => {
+async function handleRpcMessage(msg: any): Promise<void> {
   try {
     if (msg?.type === 'OFFSCREEN_START') {
       const streamId = msg.streamId as string | undefined
@@ -361,7 +373,10 @@ rpcPort.onMessage.addListener(async (msg: any) => {
     console.error('[offscreen] error', e)
     respond(msg, { ok: false, error: String(e) })
   }
-})
+}
+
+// open the initial port (attaches handleRpcMessage via connectPort)
+getPort()
 
 // allow background to check before port is ready
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
