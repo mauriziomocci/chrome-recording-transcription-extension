@@ -22,6 +22,10 @@ function connectPort(): chrome.runtime.Port {
   try { portRef?.disconnect() } catch {}
   const p: chrome.runtime.Port = chrome.runtime.connect({ name: 'offscreen' })
   p.onDisconnect.addListener(() => { log('Port disconnected'); portRef = null })
+  // the RPC handler must be attached to EVERY port: when the MV3 service
+  // worker idles out and reconnects, a fresh port is created and a listener
+  // registered only once at module load would leave it deaf (START timeouts)
+  p.onMessage.addListener(handleRpcMessage)
   // tell background alive
   p.postMessage({ type: 'OFFSCREEN_READY' })
   log('READY signaled via Port')
@@ -340,8 +344,7 @@ function stopRecording() {
 }
 
 // port rpc
-const rpcPort = getPort()
-rpcPort.onMessage.addListener(async (msg: any) => {
+async function handleRpcMessage(msg: any): Promise<void> {
   try {
     if (msg?.type === 'OFFSCREEN_START') {
       const streamId = msg.streamId as string | undefined
@@ -386,7 +389,10 @@ rpcPort.onMessage.addListener(async (msg: any) => {
     console.error('[offscreen] error', e)
     respond(msg, { ok: false, error: String(e) })
   }
-})
+}
+
+// open the initial port (attaches handleRpcMessage via connectPort)
+getPort()
 
 // allow background to check before port is ready
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
