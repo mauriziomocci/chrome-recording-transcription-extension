@@ -109,6 +109,7 @@ function mixAudio(tabStream: MediaStream, micStream: MediaStream | null): MediaS
 
   const AC = (window.AudioContext || (window as any).webkitAudioContext) as typeof AudioContext
   const ctx = new AC()
+  mixCtx = ctx
   void ctx.resume().catch(() => {})
   const dst = ctx.createMediaStreamDestination()
 
@@ -175,6 +176,20 @@ let mediaRecorder: MediaRecorder | null = null
 let chunks: BlobPart[] = []
 let capturing = false
 let playbackCtx: AudioContext | null = null
+let mixCtx: AudioContext | null = null
+// every stream opened for the current session: tab capture, mic, mixed.
+// Stopping only the mixed stream (upstream behavior) leaked the original tab
+// audio track, and a tab with a still-active capture cannot be captured again
+// ("Cannot capture a tab with an active stream") until the offscreen dies.
+let activeStreams: MediaStream[] = []
+
+function releaseCapture() {
+  activeStreams.forEach(s => { try { s.getTracks().forEach(t => t.stop()) } catch {} })
+  activeStreams = []
+  try { void mixCtx?.close() } catch {}
+  mixCtx = null
+  stopLocalPlayback()
+}
 
 // tabCapture mutes the captured tab for the user: whoever captures must route
 // the audio back to the speakers. Only tab audio — routing the mic would echo.
@@ -227,6 +242,9 @@ async function prepareAndRecord(baseStream: MediaStream): Promise<void> {
   const micStream = await maybeGetMicStream()
   const mixedStream = mixAudio(baseStream, micStream)
 
+  activeStreams = [baseStream, mixedStream]
+  if (micStream) activeStreams.push(micStream)
+
   const finalAudio = mixedStream.getAudioTracks()[0]
   if (finalAudio) attachRmsMeter(finalAudio, 'FINAL')
   if (!finalAudio) log('WARNING: final stream has NO audio track — recording will be silent')
@@ -262,8 +280,7 @@ async function prepareAndRecord(baseStream: MediaStream): Promise<void> {
     mediaRecorder!.onerror = (e: any) => {
       clearTimeout(startTimeout)
       log('MediaRecorder error', e)
-      try { mixedStream.getTracks().forEach(t => t.stop()) } catch {}
-      stopLocalPlayback()
+      releaseCapture()
       mediaRecorder = null
       capturing = false
       pushState(false)
@@ -292,8 +309,7 @@ async function prepareAndRecord(baseStream: MediaStream): Promise<void> {
       } catch (e) {
         log('Finalize/Save failed', e)
       } finally {
-        try { mixedStream.getTracks().forEach(t => t.stop()) } catch {}
-        stopLocalPlayback()
+        releaseCapture()
         mediaRecorder = null
         chunks = []
         capturing = false
@@ -315,6 +331,10 @@ async function prepareAndRecord(baseStream: MediaStream): Promise<void> {
 
 async function startRecordingFromStreamId(streamId: string): Promise<void> {
   if (capturing) { log('Already recording; ignoring start'); return }
+  // defensively drop any stream left over by a crashed or interrupted attempt:
+  // a lingering tab capture makes the new getUserMedia fail with
+  // "Cannot capture a tab with an active stream"
+  releaseCapture()
   const baseStream = await captureWithStreamId(streamId)
   await prepareAndRecord(baseStream)
 }
