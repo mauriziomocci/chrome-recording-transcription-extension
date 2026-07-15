@@ -125,6 +125,20 @@ function postToOffscreen(msg: any, timeoutMs = 15000): Promise<any> {
   })
 }
 
+// periodic autosaves overwrite the same file but chrome.downloads records one
+// history entry per save; erase those entries once complete (the file on disk
+// is untouched) so the download history is not flooded every minute
+const autosaveDownloadIds = new Set<number>()
+
+chrome.downloads.onChanged.addListener((delta) => {
+  if (!autosaveDownloadIds.has(delta.id)) return
+  const state = delta.state?.current
+  if (state === 'complete' || state === 'interrupted') {
+    autosaveDownloadIds.delete(delta.id)
+    chrome.downloads.erase({ id: delta.id }, () => void chrome.runtime.lastError)
+  }
+})
+
 // chunked conversion: a single String.fromCharCode(...bytes) overflows the
 // call stack on long transcripts, so encode 32 KB at a time
 function utf8ToBase64(text: string): string {
@@ -221,7 +235,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         (downloadId) => {
           const err = chrome.runtime.lastError
           if (err) { bglog('AUTO_SAVE_TRANSCRIPT download error:', err.message); sendResponse({ ok: false, error: err.message }) }
-          else sendResponse({ ok: true, downloadId })
+          else {
+            if (typeof downloadId === 'number') autosaveDownloadIds.add(downloadId)
+            sendResponse({ ok: true, downloadId })
+          }
         }
       )
       return
