@@ -184,6 +184,8 @@ let mixCtx: AudioContext | null = null
 let activeStreams: MediaStream[] = []
 
 function releaseCapture() {
+  const tracks = activeStreams.reduce((n, s) => { try { return n + s.getTracks().length } catch { return n } }, 0)
+  if (tracks) log(`releaseCapture: stopping ${tracks} tracks across ${activeStreams.length} streams`)
   activeStreams.forEach(s => { try { s.getTracks().forEach(t => t.stop()) } catch {} })
   activeStreams = []
   try { void mixCtx?.close() } catch {}
@@ -229,6 +231,7 @@ async function prepareAndRecord(baseStream: MediaStream): Promise<void> {
     console.log('[offscreen] audio track muted/enabled:', T?.muted, T?.enabled)
     T?.addEventListener('mute', () => console.log('[offscreen] track MUTED'))
     T?.addEventListener('unmute', () => console.log('[offscreen] track UNMUTED'))
+    T?.addEventListener('ended', () => console.log('[offscreen] AUDIO track ENDED'))
   }
   if (!v.length) throw new Error('No video track in captured stream')
 
@@ -361,6 +364,7 @@ async function startRecordingFromStreamId(streamId: string): Promise<void> {
 }
 
 function stopRecording() {
+  log('stopRecording: explicit STOP requested via RPC')
   if (!mediaRecorder || !capturing) {
     console.warn('[offscreen] Stop called but not recording')
     throw new Error('Not currently recording')

@@ -182,12 +182,31 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         return
       }
 
-      try {
+      const attemptStart = async (): Promise<any> => {
         const streamId = await getStreamIdForTab(tabId)
         // start can legitimately take longer than the default RPC timeout:
         // two getUserMedia attempts plus MediaRecorder spin-up
-        const r = await postToOffscreen({ type: 'OFFSCREEN_START', streamId }, 30000)
+        return postToOffscreen({ type: 'OFFSCREEN_START', streamId }, 30000)
+      }
+
+      try {
+        let r = await attemptStart()
         bglog('postToOffscreen(OFFSCREEN_START) response', r)
+
+        if (!r?.ok && /active stream/i.test(String(r?.error || '')) && !lastKnownRecording) {
+          // self-heal: a capture leaked somewhere inside the offscreen document
+          // (or a previous session never released the tab). Tearing the document
+          // down frees every stream it holds; recreate it and retry once. If the
+          // retry still fails with the same error, the tab is captured by
+          // something OUTSIDE this extension (another extension, tab casting).
+          bglog('active-stream failure: recreating offscreen document and retrying once')
+          try { await (chrome.offscreen as any).closeDocument?.() } catch {}
+          offscreenPort = null
+          offscreenReady = false
+          await ensureOffscreen()
+          r = await attemptStart()
+          bglog('retry OFFSCREEN_START response', r)
+        }
 
         if (r?.ok) {
           lastKnownRecording = true
