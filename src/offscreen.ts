@@ -242,7 +242,7 @@ async function prepareAndRecord(baseStream: MediaStream): Promise<void> {
   const micStream = await maybeGetMicStream()
   const mixedStream = mixAudio(baseStream, micStream)
 
-  activeStreams = [baseStream, mixedStream]
+  activeStreams = [baseStream, mixedStream] // baseStream already registered by the caller; keep it here too
   if (micStream) activeStreams.push(micStream)
 
   const finalAudio = mixedStream.getAudioTracks()[0]
@@ -345,7 +345,16 @@ async function startRecordingFromStreamId(streamId: string): Promise<void> {
     // defensively drop any stream left over by a crashed or interrupted attempt
     releaseCapture()
     const baseStream = await captureWithStreamId(streamId)
-    await prepareAndRecord(baseStream)
+    // register for release IMMEDIATELY: any failure between acquisition and a
+    // successful start must not leave the tab captured, or every later start
+    // fails with "Cannot capture a tab with an active stream"
+    activeStreams = [baseStream]
+    try {
+      await prepareAndRecord(baseStream)
+    } catch (e) {
+      releaseCapture()
+      throw e
+    }
   } finally {
     starting = false
   }
