@@ -183,7 +183,10 @@ let mixCtx: AudioContext | null = null
 // ("Cannot capture a tab with an active stream") until the offscreen dies.
 let activeStreams: MediaStream[] = []
 
+let heartbeat: number | null = null
+
 function releaseCapture() {
+  if (heartbeat !== null) { clearInterval(heartbeat); heartbeat = null }
   const tracks = activeStreams.reduce((n, s) => { try { return n + s.getTracks().length } catch { return n } }, 0)
   if (tracks) log(`releaseCapture: stopping ${tracks} tracks across ${activeStreams.length} streams`)
   activeStreams.forEach(s => { try { s.getTracks().forEach(t => t.stop()) } catch {} })
@@ -195,13 +198,23 @@ function releaseCapture() {
 
 // tabCapture mutes the captured tab for the user: whoever captures must route
 // the audio back to the speakers. Only tab audio — routing the mic would echo.
-function startLocalPlayback(tabAudio: MediaStreamTrack) {
+// Also plays a near-silent constant source for the whole recording: an
+// offscreen document whose AUDIO_PLAYBACK reason goes silent for ~30s can be
+// reclaimed by Chrome, killing the recording without onstop (no file saved).
+function startLocalPlayback(tabAudio: MediaStreamTrack | null) {
   try {
     const AC = (window.AudioContext || (window as any).webkitAudioContext) as typeof AudioContext
     playbackCtx = new AC()
     void playbackCtx.resume().catch(() => {})
-    playbackCtx.createMediaStreamSource(new MediaStream([tabAudio])).connect(playbackCtx.destination)
-    log('local playback of tab audio started')
+    if (tabAudio) {
+      playbackCtx.createMediaStreamSource(new MediaStream([tabAudio])).connect(playbackCtx.destination)
+      log('local playback of tab audio started')
+    }
+    const keepalive = playbackCtx.createConstantSource()
+    keepalive.offset.value = 0.0001 // inaudible, but counts as audio playback
+    keepalive.connect(playbackCtx.destination)
+    keepalive.start()
+    log('audio keepalive started')
   } catch (e) {
     log('local playback setup failed (call audio will stay muted while recording)', e)
   }
@@ -239,8 +252,9 @@ async function prepareAndRecord(baseStream: MediaStream): Promise<void> {
   const rawAudio = baseStream.getAudioTracks()[0]
   if (rawAudio) attachRmsMeter(rawAudio, 'RAW')
 
-  // keep the call audible for the user while recording
-  if (rawAudio) startLocalPlayback(rawAudio)
+  // keep the call audible for the user while recording (and the keepalive
+  // running even when the tab has no audio track)
+  startLocalPlayback(rawAudio ?? null)
 
   const micStream = await maybeGetMicStream()
   const mixedStream = mixAudio(baseStream, micStream)
@@ -276,6 +290,10 @@ async function prepareAndRecord(baseStream: MediaStream): Promise<void> {
       clearTimeout(startTimeout)
       capturing = true
       pushState(true)
+      // keep the service worker <-> offscreen pair warm for the whole recording
+      heartbeat = window.setInterval(() => {
+        try { getPort().postMessage({ type: 'OFFSCREEN_HEARTBEAT' }) } catch {}
+      }, 20_000)
       log('MediaRecorder started')
       resolve()
     }
