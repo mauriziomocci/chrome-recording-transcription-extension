@@ -219,6 +219,16 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     }
 
     if (msg?.type === 'GET_RECORDING_STATUS') {
+      // lastKnownRecording lives in the service worker and resets to false on
+      // every worker recycle; storage.session is written by the offscreen on
+      // each state change and survives the recycle, so trust it first
+      try {
+        const res = await (chrome.storage as any)?.session?.get?.(['recording'])
+        if (res && typeof res.recording === 'boolean') {
+          lastKnownRecording = res.recording
+          setBadge(lastKnownRecording)
+        }
+      } catch {}
       sendResponse({ recording: lastKnownRecording })
       return
     }

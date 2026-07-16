@@ -329,14 +329,26 @@ async function prepareAndRecord(baseStream: MediaStream): Promise<void> {
   await started
 }
 
+let starting = false
+
 async function startRecordingFromStreamId(streamId: string): Promise<void> {
-  if (capturing) { log('Already recording; ignoring start'); return }
-  // defensively drop any stream left over by a crashed or interrupted attempt:
-  // a lingering tab capture makes the new getUserMedia fail with
-  // "Cannot capture a tab with an active stream"
-  releaseCapture()
-  const baseStream = await captureWithStreamId(streamId)
-  await prepareAndRecord(baseStream)
+  if (capturing) {
+    log('Already recording; ignoring start')
+    pushState(true) // resync popup/badge that may have gone stale
+    return
+  }
+  // a second START while the first is still acquiring streams would find the
+  // tab already captured and fail with "Cannot capture a tab with an active stream"
+  if (starting) throw new Error('Start already in progress')
+  starting = true
+  try {
+    // defensively drop any stream left over by a crashed or interrupted attempt
+    releaseCapture()
+    const baseStream = await captureWithStreamId(streamId)
+    await prepareAndRecord(baseStream)
+  } finally {
+    starting = false
+  }
 }
 
 function stopRecording() {
